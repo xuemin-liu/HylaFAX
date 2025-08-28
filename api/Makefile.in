@@ -1,0 +1,44 @@
+#
+# Makefile for HylaFAX API
+#
+DEPTH=..
+SUBDIR=api
+
+@MAKEINCLUDE@ @MAKELQUOTE@${DEPTH}/defs@MAKERQUOTE@
+
+# Source files
+CXXFILES = FaxAPI.cpp
+TARGETS = libfaxapi.a example
+
+# Include directories
+CPPFLAGS += -I../libhylafax
+
+# Library dependencies  
+LIBFAX = ../libhylafax/libfax.a
+LIBS = $(LIBFAX) ${LIBUTIL} ${LIBTIFF} ${LIBZ}
+
+default all::
+	@${MAKE} incdepend
+	@${MAKE} targets
+
+targets: $(TARGETS)
+
+# Build the static library
+libfaxapi.a: ${OBJECTS}
+	${AR} rc $@ ${OBJECTS}
+	${RANLIB} $@
+
+# Build the example program
+example: example.o libfaxapi.a
+	${C++F} -o $@ example.o libfaxapi.a ${LIBS} ${LDFLAGS}
+
+# Installation
+install: default
+	${INSTALL} -F ${LIBDIR} -m 644 -idb ${PRODUCT}.sw.dev -O libfaxapi.a
+	${INSTALL} -F ${INCDIR}/hylafax -m 644 -idb ${PRODUCT}.sw.dev -O FaxAPI.h
+
+# Clean up
+clean::
+	$(RM) -f $(TARGETS) *.o *.a
+
+@MAKEINCLUDE@ @MAKELQUOTE@${COMMONRULES}@MAKERQUOTE@
