@@ -197,7 +197,7 @@ done:
  * Class2Params::encodeCaps().
  */
 int
-parseCapabilities(const char* cp, u_int* caps)
+parseCapabilities(const char* cp, unsigned int* caps)
 {
     /* we are limited to 32 bits, thus BR_ALL is restricted above */
     int vr, br, wd, ln, df, ec, bf, st;
@@ -236,7 +236,7 @@ main(int argc, char** argv)
     extern char* optarg;
     int fifo, c;
     char* spooldir = FAX_SPOOLDIR;
-    u_int caps;
+    unsigned int caps;
     char canpoll = 'P';				/* can poll by default */
     char devname[80];
     int cmdlen, pdevlen;
