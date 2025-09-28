@@ -1,9 +1,9 @@
 #!/bin/bash
 
 # HylaFAX+ All-in-One Build Script for Rocky Linux 9.x
-# This script builds HylaFAX+ with TIFF 3.9.7 from source
+# This script builds HylaFAX+ with TIFF 3.9.7 and libjpeg-turbo from source
 # Author: GitHub Copilot
-# Date: September 26, 2024
+# Date: September 28, 2025
 
 set -e  # Exit on any error
 
@@ -11,8 +11,10 @@ set -e  # Exit on any error
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BUILD_DIR="/tmp/hylafax-build-$(date +%Y%m%d-%H%M%S)"
 TIFF_TAG="v3.9.7"
+JPEG_TURBO_REPO="https://github.com/libjpeg-turbo/libjpeg-turbo.git"
+JPEG_TURBO_TAG="3.0.4"
 HYLAFAX_REPO="https://github.com/xuemin-liu/HylaFAX.git"
-HYLAFAX_BRANCH="rocky-linux-compatibility"
+HYLAFAX_BRANCH="master"
 
 # Color output
 RED='\033[0;31m'
@@ -68,7 +70,8 @@ sudo dnf install -y \
     git \
     wget \
     gcc-c++ \
-    make || {
+    make \
+    nasm || {
     error "Failed to install required packages"
     exit 1
 }
@@ -79,41 +82,65 @@ log "Creating build directory: $BUILD_DIR"
 mkdir -p "$BUILD_DIR"
 cd "$BUILD_DIR"
 
-# Step 3: Build JPEG library
-header "Building JPEG Library"
-log "Downloading JPEG source code..."
-JPEG_VERSION="9e"
-wget http://www.ijg.org/files/jpegsrc.v${JPEG_VERSION}.tar.gz
-tar -xzf jpegsrc.v${JPEG_VERSION}.tar.gz
-cd jpeg-${JPEG_VERSION}
+# Step 3: Build libjpeg-turbo library
+header "Building libjpeg-turbo Library"
+log "Cloning libjpeg-turbo from GitHub..."
+git clone --branch "$JPEG_TURBO_TAG" --depth 1 "$JPEG_TURBO_REPO" jpeg-turbo-source
+cd jpeg-turbo-source
 
-log "Configuring JPEG build..."
+log "Creating build directory for libjpeg-turbo..."
+mkdir build
+cd build
+
+log "Configuring libjpeg-turbo build with CMake..."
 export CFLAGS="-fPIC"
 export CXXFLAGS="-fPIC"
-./configure --prefix="$BUILD_DIR/jpeg-install" \
-    --enable-static \
-    --disable-shared
+cmake .. \
+    -DCMAKE_INSTALL_PREFIX="$BUILD_DIR/jpeg-install" \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DCMAKE_INSTALL_LIBDIR=lib \
+    -DENABLE_SHARED=FALSE \
+    -DENABLE_STATIC=TRUE \
+    -DWITH_SIMD=TRUE \
+    -DWITH_TURBOJPEG=FALSE
 
-log "Building JPEG library..."
+log "Building libjpeg-turbo library..."
 make -j$(nproc)
 
-log "Installing JPEG library..."
+log "Installing libjpeg-turbo library..."
 make install
 
-# Verify JPEG installation
-if [ ! -f "$BUILD_DIR/jpeg-install/lib/libjpeg.a" ]; then
-    error "JPEG static library not found after installation"
+# Debug: Show what was actually installed
+log "Debug: Contents of jpeg-install directory:"
+ls -la "$BUILD_DIR/jpeg-install/" || true
+ls -la "$BUILD_DIR/jpeg-install/lib/" 2>/dev/null || true
+ls -la "$BUILD_DIR/jpeg-install/lib64/" 2>/dev/null || true
+
+# Verify libjpeg-turbo installation (check both lib and lib64)
+if [ -f "$BUILD_DIR/jpeg-install/lib/libjpeg.a" ]; then
+    JPEG_LIB_DIR="$BUILD_DIR/jpeg-install/lib"
+    log "Found libjpeg-turbo static library in lib/ directory"
+elif [ -f "$BUILD_DIR/jpeg-install/lib64/libjpeg.a" ]; then
+    JPEG_LIB_DIR="$BUILD_DIR/jpeg-install/lib64"
+    log "Found libjpeg-turbo static library in lib64/ directory"
+    # Create symlink in lib/ for consistency
+    ln -sf "../lib64/libjpeg.a" "$BUILD_DIR/jpeg-install/lib/libjpeg.a"
+    log "Created symlink: lib/libjpeg.a -> lib64/libjpeg.a"
+else
+    error "libjpeg-turbo static library not found after installation"
+    error "Expected: $BUILD_DIR/jpeg-install/lib/libjpeg.a or $BUILD_DIR/jpeg-install/lib64/libjpeg.a"
     exit 1
 fi
 
 # Verify no shared JPEG libraries were created
-if ls "$BUILD_DIR/jpeg-install/lib/"*.so* >/dev/null 2>&1; then
-    error "Shared JPEG libraries found - static build failed"
+if ls "$BUILD_DIR/jpeg-install/lib/"*.so* >/dev/null 2>&1 || ls "$BUILD_DIR/jpeg-install/lib64/"*.so* >/dev/null 2>&1; then
+    error "Shared libjpeg-turbo libraries found - static build failed"
     exit 1
 fi
 
-log "JPEG library built successfully as static library"
-log "JPEG library location: $BUILD_DIR/jpeg-install/lib/libjpeg.a"
+log "libjpeg-turbo library built successfully as static library"
+log "libjpeg-turbo library location: $JPEG_LIB_DIR/libjpeg.a"
+log "libjpeg-turbo version: $(cat "$BUILD_DIR/jpeg-install/include/jversion.h" | grep JVERSION | cut -d'"' -f2)"
 
 cd "$BUILD_DIR"
 
@@ -124,13 +151,13 @@ git clone https://gitlab.com/libtiff/libtiff.git tiff-source
 cd tiff-source
 git checkout "$TIFF_TAG"
 
-log "Configuring TIFF build with static JPEG..."
+log "Configuring TIFF build with static libjpeg-turbo..."
 ./autogen.sh
 export CFLAGS="-fPIC"
 export CXXFLAGS="-fPIC" 
 export LDFLAGS="-L$BUILD_DIR/jpeg-install/lib"
 export CPPFLAGS="-I$BUILD_DIR/jpeg-install/include"
-./configure --prefix="$BUILD_DIR/tiff397-install" \
+./configure --prefix="/usr/local" \
     --enable-static \
     --disable-shared \
     --with-zlib \
@@ -141,23 +168,24 @@ log "Building TIFF library..."
 make -j$(nproc)
 
 log "Installing TIFF library..."
-make install
+sudo make install
 
 # Verify TIFF installation
-if [ ! -f "$BUILD_DIR/tiff397-install/lib/libtiff.a" ]; then
+if [ ! -f "/usr/local/lib/libtiff.a" ]; then
     error "TIFF static library not found after installation"
+    error "Expected: /usr/local/lib/libtiff.a"
     exit 1
 fi
 
-# Verify no shared TIFF libraries were created
-if ls "$BUILD_DIR/tiff397-install/lib/"*.so* >/dev/null 2>&1; then
+# Verify no shared TIFF libraries were created in /usr/local/lib
+if ls "/usr/local/lib/"libtiff*.so* >/dev/null 2>&1; then
     error "Shared TIFF libraries found - static build failed"
     exit 1
 fi
 
-log "TIFF 3.9.7 built successfully as static library with embedded JPEG"
-log "TIFF tools available in: $BUILD_DIR/tiff397-install/bin/"
-ls -la "$BUILD_DIR/tiff397-install/bin/" | head -10
+log "TIFF 3.9.7 built successfully as static library with embedded libjpeg-turbo"
+log "TIFF tools available in: /usr/local/bin/"
+ls -la "/usr/local/bin/"tiff* | head -10
 
 # Step 5: Clone and build HylaFAX+
 header "Building HylaFAX+"
@@ -167,28 +195,28 @@ git clone --branch "$HYLAFAX_BRANCH" "$HYLAFAX_REPO" hylafax-source
 cd hylafax-source
 
 log "Configuring HylaFAX+ build..."
-./configure --with-TIFFLIB="$BUILD_DIR/tiff397-install/lib/libtiff.a" \
-    --with-TIFFINC="-I$BUILD_DIR/tiff397-install/include" \
-    --with-LIBTIFF="$BUILD_DIR/tiff397-install/lib/libtiff.a" \
+./configure --with-TIFFLIB="/usr/local/lib/libtiff.a" \
+    --with-TIFFINC="-I/usr/local/include" \
+    --with-LIBTIFF="/usr/local/lib/libtiff.a" \
     --with-ZLIB \
     --with-JPEG \
-    --with-TIFFBIN="$BUILD_DIR/tiff397-install/bin" \
+    --with-TIFFBIN="/usr/local/bin" \
     --with-DSO=auto \
     --disable-pam
 
 log "Building HylaFAX+..."
 # Build and check if we need JPEG static linking fix
 if ! make -j$(nproc); then
-    log "Initial build failed, applying comprehensive static JPEG linking fix..."
+    log "Initial build failed, applying comprehensive static libjpeg-turbo linking fix..."
     
-    # Fix libhylafax shared library to include static JPEG
+    # Fix libhylafax shared library to include static libjpeg-turbo
     sed -i 's|\${MACHDEPLIBS}|\${MACHDEPLIBS} '$BUILD_DIR'/jpeg-install/lib/libjpeg.a|' libhylafax/Makefile.LINUXdso 2>/dev/null || true
     
-    # Fix all utility programs to link JPEG library
+    # Fix all utility programs to link libjpeg-turbo library
     for makefile in util/Makefile faxd/Makefile hfaxd/Makefile; do
         if [ -f "$makefile" ]; then
-            log "Fixing JPEG linking in $makefile..."
-            # Add JPEG library to LDLIBS
+            log "Fixing libjpeg-turbo linking in $makefile..."
+            # Add libjpeg-turbo library to LDLIBS
             if ! grep -q "jpeg-install/lib/libjpeg.a" "$makefile"; then
                 sed -i 's|LDLIBS[[:space:]]*=.*|& '$BUILD_DIR'/jpeg-install/lib/libjpeg.a|' "$makefile"
                 # Also add to DSO libs if present
@@ -197,22 +225,22 @@ if ! make -j$(nproc); then
         fi
     done
     
-    # Fix specific linking for utilities that directly use JPEG
+    # Fix specific linking for utilities that directly use libjpeg-turbo
     sed -i 's|\$(DSLIBS)|\$(DSLIBS) '$BUILD_DIR'/jpeg-install/lib/libjpeg.a|g' util/Makefile 2>/dev/null || true
     
     # Rebuild with fixed linking
     make clean && make -j$(nproc)
 fi
 
-log "Verifying JPEG static linking before installation..."
+log "Verifying libjpeg-turbo static linking before installation..."
 # Test a few key executables for JPEG dependencies
 if command -v ldd &> /dev/null; then
     for exe in util/faxmodem util/tiffcheck util/textfmt; do
         if [ -f "$exe" ]; then
             if ldd "$exe" 2>/dev/null | grep -q "libjpeg"; then
-                log "WARNING: $exe still has dynamic JPEG dependency"
+                log "WARNING: $exe still has dynamic libjpeg dependency"
             else
-                log "✅ $exe: Static JPEG linking verified"
+                log "✅ $exe: Static libjpeg-turbo linking verified"
             fi
         fi
     done
@@ -225,20 +253,19 @@ header "Build Complete!"
 log "HylaFAX+ has been successfully built and installed with static libraries!"
 log ""
 log "Static Library Build Verification:"
-log "✅ JPEG: Built as static library (libjpeg.a)"
-log "✅ TIFF: Built as static library with embedded JPEG (libtiff.a)"
+log "✅ libjpeg-turbo: Built as static library (libjpeg.a)"
+log "✅ TIFF: Built as static library with embedded libjpeg-turbo (libtiff.a)"
 log "✅ HylaFAX+: Uses static libraries for all external dependencies"
 log ""
-log "Build artifacts located in: $BUILD_DIR"
-log "TIFF tools location: $BUILD_DIR/tiff397-install/bin/"
-log "HylaFAX+ installed in: /usr/local/"
+log "Build Directory: $BUILD_DIR"
+log "TIFF Tools Path: /usr/local/bin"
 log ""
 log "Next steps:"
 log "1. Run 'sudo /usr/local/sbin/faxsetup' to configure HylaFAX+"
-log "2. Use TIFF tools from: $BUILD_DIR/tiff397-install/bin/"
+log "2. TIFF tools are now installed in: /usr/local/bin/"
 log ""
 log "For configuration, run:"
-log "  sudo /usr/local/sbin/faxsetup -with-TIFFBIN=$BUILD_DIR/tiff397-install/bin"
+log "  sudo /usr/local/sbin/faxsetup"
 
 # Save important paths
 cat > "$BUILD_DIR/build-info.txt" << EOF
@@ -246,15 +273,16 @@ HylaFAX+ Build Information
 =========================
 Build Date: $(date)
 Build Directory: $BUILD_DIR
-JPEG Install Directory: $BUILD_DIR/jpeg-install
-TIFF Install Directory: $BUILD_DIR/tiff397-install
-TIFF Tools Path: $BUILD_DIR/tiff397-install/bin
+libjpeg-turbo Install Directory: $BUILD_DIR/jpeg-install
+TIFF Install Directory: /usr/local
+TIFF Tools Path: /usr/local/bin
 HylaFAX+ Install Directory: /usr/local
-Configuration Command: sudo /usr/local/sbin/faxsetup -with-TIFFBIN=$BUILD_DIR/tiff397-install/bin
+Configuration Command: sudo /usr/local/sbin/faxsetup
 
 Libraries built:
-- JPEG: $BUILD_DIR/jpeg-install/lib/libjpeg.a (static)
-- TIFF: $BUILD_DIR/tiff397-install/lib/libtiff.a (static, includes JPEG)
+- libjpeg-turbo: $BUILD_DIR/jpeg-install/lib/libjpeg.a (static, used for TIFF build)
+- TIFF: /usr/local/lib/libtiff.a (static, includes libjpeg-turbo)
+- HylaFAX+: /usr/local (uses system-installed TIFF tools)
 EOF
 
 log "Build information saved to: $BUILD_DIR/build-info.txt"
