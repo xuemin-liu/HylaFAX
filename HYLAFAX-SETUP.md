@@ -90,6 +90,82 @@ ls -la /usr/local/sbin/fax*
 ldd /usr/local/sbin/faxmodem 2>&1 | head -3
 ```
 
+### 4. Configure Custom Port (Optional)
+
+By default, HylaFAX uses port **4559**. To change this:
+
+#### **Method 1: Modify Init Script (Permanent)**
+```bash
+# Edit the init script to change the default port
+sudo nano /etc/rc.d/init.d/hylafax
+
+# Find this line:
+FAXPORT=hylafax                 # designated port for new protocol
+
+# Change to your desired port (e.g., port 8559):
+FAXPORT=8559                    # custom port for new protocol
+
+# Restart HylaFAX services
+sudo systemctl restart hylafax
+```
+
+#### **Method 2: Manual Daemon Startup (Temporary)**
+```bash
+# Stop systemd service
+sudo systemctl stop hylafax
+
+# Start manually with custom port
+sudo /usr/local/sbin/faxq &
+sudo /usr/local/sbin/hfaxd -i 8559 &  # Use port 8559 instead of 4559
+
+# Verify new port is listening
+sudo netstat -tlnp | grep 8559
+# or
+sudo ss -tlnp | grep 8559
+```
+
+#### **Method 3: Multiple Ports (Advanced)**
+```bash
+# HylaFAX can listen on multiple ports simultaneously
+sudo /usr/local/sbin/hfaxd -i 4559 -i 8559 &  # Listen on both ports
+```
+
+#### **Method 4: Bind to Specific IP Address**
+```bash
+# Bind to specific interface and port
+sudo /usr/local/sbin/hfaxd -l 192.168.1.100 -i 8559 &
+```
+
+#### **Port Configuration Options:**
+- `-i port` - Listen on specified port for HylaFAX client-server protocol
+- `-s port` - Listen on specified port for SNPP (Simple Network Paging Protocol)
+- `-l bindaddress` - Bind to specific IP address (must be specified before -i)
+- `-o port` - Listen on specified port for old protocol support
+
+#### **Update /etc/services (Recommended)**
+```bash
+# Add your custom port to /etc/services for easier reference
+echo "hylafax-custom    8559/tcp                        # HylaFAX custom port" | sudo tee -a /etc/services
+echo "hylafax-custom    8559/udp                # HylaFAX custom port" | sudo tee -a /etc/services
+```
+
+#### **Verify Port Change:**
+```bash
+# Check if services are running on new port
+ps aux | grep -E "faxq|hfaxd" | grep -v grep
+sudo netstat -tlnp | grep 8559
+
+# Test connectivity to new port
+/usr/local/bin/faxstat -h localhost:8559 -s
+```
+
+#### **Important Notes:**
+- **Firewall**: Update firewall rules to allow the new port
+- **Clients**: Update all client configurations to use the new port
+- **Systemd**: For permanent changes, modify the init script as shown in Method 1
+- **Multiple Ports**: You can run multiple hfaxd instances on different ports
+- **SNPP Port**: Default SNPP port is 444, can be changed with `-s port`
+
 ## Key Features
 
 - **Complete Static Library Build**: All compression libraries (libjpeg-turbo, zlib, jbigkit) are built as optimized static libraries in temp directories
@@ -150,6 +226,25 @@ ps aux | grep -E "faxq|hfaxd" | grep -v grep
 - This is normal - HylaFAX+ requires authentication
 - Check `/var/spool/hylafax/etc/hosts.hfaxd` for allowed hosts
 - For testing, ensure `localhost` and `127.0.0.1` are listed
+
+### Port Configuration Issues
+```bash
+# If port is already in use
+sudo netstat -tlnp | grep 4559  # Check what's using the port
+sudo lsof -i :4559             # Alternative method to check port usage
+
+# If can't connect to custom port
+sudo firewall-cmd --add-port=8559/tcp --permanent  # Add firewall rule (Rocky Linux)
+sudo firewall-cmd --reload                         # Reload firewall rules
+
+# If systemctl fails after port change
+sudo systemctl daemon-reload  # Reload systemd after init script changes
+sudo systemctl restart hylafax
+
+# Check if hfaxd is listening on correct port
+sudo ss -tlnp | grep hfaxd     # Should show your custom port
+ps aux | grep hfaxd            # Check command line arguments
+```
 
 ### How to Disable Email Notifications After Setup
 
